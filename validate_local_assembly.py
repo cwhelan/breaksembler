@@ -7,6 +7,7 @@ import os.path
 import time
 import sqlite3
 import sys
+import argparse
 
 def read_sam_file(sam_file_name):
     samfile = pysam.Samfile(sam_file_name, "r")
@@ -244,7 +245,14 @@ def assemble_contigs(prediction, bamfile, bwa_ref, unmapped_reads_db, flank = 10
                                                
 
 def main():
-    deletion_preds_file = sys.argv[1]
+    parser = argparse.ArgumentParser()
+    parser.add_argument('deletion_preds_file')
+    parser.add_argument('--keep_unmapped_reads_db', default=False, dest='keep_unmapped_reads_db', action='store_true')
+    args = parser.parse_args()
+
+    deletion_preds_file = args.deletion_preds_file
+    keep_unmapped_reads_db = args.keep_unmapped_read_db
+
     bam_file = "/l2/users/whelanch/gene_rearrange/sv/jcvi_sim_chr2_allindels_100bp_dip/human_b36_male_chr2_venterindels_c15_i100_s30_rl100_sort.bam"
     unmapped_reads_db_name = tempfile.NamedTemporaryFile().name
     try:
@@ -290,8 +298,11 @@ def main():
 
         results_file.close()
     finally:
-        sys.stderr.write("Removing temporary unmapped reads database..\n")
-        os.remove(unmapped_reads_db_name)
+        if keep_unmapped_reads_db:
+            sys.stderr.write("Unmapped reads DB: {0}\n".format(unmapped_reads_db_name))
+        else:
+            sys.stderr.write("Removing temporary unmapped reads database..\n")
+            os.remove(unmapped_reads_db_name)
     sys.stderr.write("Done.")
 
 if __name__ == "__main__":
