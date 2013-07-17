@@ -139,7 +139,7 @@ def spades_assemble(temp_dir):
     run_command("/g/whelanch/software/SPAdes-2.5.0-Linux/bin/spades.py --careful --pe1-1 {0}/flank_reads_f1.fq --pe1-2 {0}/flank_reads_fq2.fq -t 1 -o {0}".format(temp_dir))
     return "{0}/contigs.fasta".format(temp_dir)
 
-def assemble_contigs(prediction, bamfile, bwa_ref, unmapped_reads_db, flank = 1000):
+def assemble_contigs(prediction, bamfile, bwa_ref, unmapped_reads_db, flank = 1000, keep_temp_dirs = False):
     temp_dir = tempfile.mkdtemp()
     records_by_name = None
     flanks_only = True
@@ -239,7 +239,8 @@ def assemble_contigs(prediction, bamfile, bwa_ref, unmapped_reads_db, flank = 10
         (samfile, records_by_name) = read_sam_file("{0}/bwa_mem_out.sam".format(temp_dir))
     finally:
         os.chdir(saved_path)
-        shutil.rmtree(temp_dir)
+        if not keep_temp_dirs:
+            shutil.rmtree(temp_dir)
 
     return (samfile, records_by_name)
                                                
@@ -248,42 +249,52 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('deletion_preds_file')
     parser.add_argument('--keep_unmapped_reads_db', default=False, dest='keep_unmapped_reads_db', action='store_true')
+    parser.add_argument('--keep_temp_dirs', default=False, dest='keep_temp_dirs', action='store_true')
+    parser.add_argument('--use_existing_unmapped_reads_db')
     args = parser.parse_args()
 
+    print args 
+
     deletion_preds_file = args.deletion_preds_file
-    keep_unmapped_reads_db = args.keep_unmapped_read_db
+    keep_unmapped_reads_db = args.keep_unmapped_reads_db
+    keep_temp_dirs = args.keep_temp_dirs
 
     bam_file = "/l2/users/whelanch/gene_rearrange/sv/jcvi_sim_chr2_allindels_100bp_dip/human_b36_male_chr2_venterindels_c15_i100_s30_rl100_sort.bam"
     unmapped_reads_db_name = tempfile.NamedTemporaryFile().name
     try:
         unmapped_reads_db = None
-        sys.stderr.write("Creating unmapped reads database {0}..\n".format(unmapped_reads_db_name))
-        start_create_db_time = int(round(time.time() * 1000))
-        unmapped_reads_db = sqlite3.connect(unmapped_reads_db_name)
-        c = unmapped_reads_db.cursor()
-        c.execute('''CREATE TABLE mappings (readid text, sam text)''')
-        view_process = subprocess.Popen("samtools view -f 0x4 {0}".format(bam_file), shell=True, stdout=subprocess.PIPE)
-        i = 0
-        time_cp = int(round(time.time() * 1000))
-        for line in view_process.stdout:
-            read_name = line[0:line.index("\t")]
-            c.execute("insert into mappings values (?, ?)", (read_name, line.strip()))
-            i = i + 1
-            if i % 100000 == 0:
-                current_time = int(round(time.time() * 1000))
-                sys.stderr.write("loaded {0} records in {1}\n".format(i, (current_time - time_cp)))
-                time_cp = current_time
-                sys.stderr.write("wrote {0} reads to {1}\n".format(i, unmapped_reads_db_name))
-                unmapped_reads_db.commit()
-        sys.stderr.write("creating index..")
-        c.execute('''CREATE INDEX map_read_id_idx on mappings (readid)''')
-        current_time = int(round(time.time() * 1000))
-        sys.stderr.write("done indexing.. created db in {0}\n".format((current_time - start_create_db_time)))
+        if args.use_existing_unmapped_reads_db is None:
+            sys.stderr.write("Creating unmapped reads database {0}..\n".format(unmapped_reads_db_name))
+            start_create_db_time = int(round(time.time() * 1000))
+            unmapped_reads_db = sqlite3.connect(unmapped_reads_db_name)
+            c = unmapped_reads_db.cursor()
+            c.execute('''CREATE TABLE mappings (readid text, sam text)''')
+            view_process = subprocess.Popen("samtools view -f 0x4 {0}".format(bam_file), shell=True, stdout=subprocess.PIPE)
+            i = 0
+            time_cp = int(round(time.time() * 1000))
+            for line in view_process.stdout:
+                read_name = line[0:line.index("\t")]
+                c.execute("insert into mappings values (?, ?)", (read_name, line.strip()))
+                i = i + 1
+                if i % 100000 == 0:
+                    current_time = int(round(time.time() * 1000))
+                    sys.stderr.write("loaded {0} records in {1}\n".format(i, (current_time - time_cp)))
+                    time_cp = current_time
+                    sys.stderr.write("wrote {0} reads to {1}\n".format(i, unmapped_reads_db_name))
+                    unmapped_reads_db.commit()
+            sys.stderr.write("creating index..")
+            c.execute('''CREATE INDEX map_read_id_idx on mappings (readid)''')
+            current_time = int(round(time.time() * 1000))
+            sys.stderr.write("done indexing.. created db in {0}\n".format((current_time - start_create_db_time)))
+        else:
+            unmapped_reads_db_name = args.use_existing_unmapped_reads_db
+            sys.stderr.write("using existing unmapped reads db {0}\n".format(unmapped_reads_db_name))
+            unmapped_reads_db = sqlite3.connect(unmapped_reads_db_name)
         preds = pybedtools.BedTool(deletion_preds_file)
         results_file = open("results.txt", "w")
         for prediction in preds:
             sys.stderr.write("validating deletion pred " + str(prediction) + "\n")
-            (samfile, records_by_name) = assemble_contigs(prediction, bam_file, "/l2/users/whelanch/genome_refs/10KG/hg18/human_b36_male_chr2.fasta", unmapped_reads_db, flank=1000)
+            (samfile, records_by_name) = assemble_contigs(prediction, bam_file, "/l2/users/whelanch/genome_refs/10KG/hg18/human_b36_male_chr2.fasta", unmapped_reads_db, flank=1000, keep_temp_dirs=keep_temp_dirs)
             deletions_from_contigs = get_deletion_intervals(samfile, records_by_name)
             sys.stderr.write("\n".join(map(str,deletions_from_contigs)))
             sys.stderr.write("\n")
@@ -298,11 +309,12 @@ def main():
 
         results_file.close()
     finally:
-        if keep_unmapped_reads_db:
-            sys.stderr.write("Unmapped reads DB: {0}\n".format(unmapped_reads_db_name))
-        else:
-            sys.stderr.write("Removing temporary unmapped reads database..\n")
-            os.remove(unmapped_reads_db_name)
+        if args.use_existing_unmapped_reads_db is None:
+            if keep_unmapped_reads_db:
+                sys.stderr.write("Unmapped reads DB: {0}\n".format(unmapped_reads_db_name))
+            else:
+                sys.stderr.write("Removing temporary unmapped reads database..\n")
+                os.remove(unmapped_reads_db_name)
     sys.stderr.write("Done.")
 
 if __name__ == "__main__":
